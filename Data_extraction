@@ -1,0 +1,95 @@
+import requests
+import pandas as pd
+from calendar import monthrange
+
+KM_TO_DEGREE = 1 / 111.32
+
+def get_density_data(bbox, year, vessel_type, output_file):
+    output_data = []
+    min_lat, min_lon, max_lat, max_lon = map(float, bbox.split(','))
+
+    lat_diff = max_lat - min_lat
+    lon_diff = max_lon - min_lon
+
+    num_pixels_height = int(lat_diff / KM_TO_DEGREE)
+    num_pixels_width = int(lon_diff / KM_TO_DEGREE)
+
+    try:
+        for month in range(1, 13):
+            days_in_month = monthrange(year, month)[1]
+
+            for day in range(1, days_in_month + 1):
+                time = f"{year}-{month:02d}-{day:02d}T00:00:00Z"
+
+                for row in range(num_pixels_height):
+                    for col in range(num_pixels_width):
+                        pixel_min_lat = min_lat + row * KM_TO_DEGREE
+                        pixel_max_lat = pixel_min_lat + KM_TO_DEGREE
+                        pixel_min_lon = min_lon + col * KM_TO_DEGREE
+                        pixel_max_lon = pixel_min_lon + KM_TO_DEGREE
+
+                        pixel_bbox = f"{pixel_min_lat},{pixel_min_lon},{pixel_max_lat},{pixel_max_lon}"
+
+                        base_url = "https://gmtds.maplarge.com/ogc/ais:density/wms"
+                        params = {
+                            "SERVICE": "WMS",
+                            "REQUEST": "GetFeatureInfo",
+                            "LAYERS": "ais:density",
+                            "STYLES": "",
+                            "FORMAT": "image/png",
+                            "TRANSPARENT": "TRUE",
+                            "version": "1.3.0",
+                            "WIDTH": 256,
+                            "HEIGHT": 256,
+                            "CRS": "EPSG:4326",
+                            "bbox": pixel_bbox,
+                            "time": time,
+                            "cql_filter": f"category_column='ShipTypeAgg' AND category='{vessel_type}'",
+                            "query_layers": "ais:density",
+                            "info_format": "application/vnd.geo+json",
+                            "feature_count": 1,
+                            "I": 64,
+                            "J": 196
+                        }
+
+                        response = requests.get(base_url, params=params)
+                        print(f"Requesting data for {time} with URL: {response.url}")
+
+                        if response.status_code == 200:
+                            data = response.json()
+                            if "features" in data and len(data["features"]) > 0:
+                                density_value = data["features"][0]["properties"].get("DEFAULT")
+                                output_data.append({
+                                    "Date": time,
+                                    "Pixel BBox": pixel_bbox,
+                                    "Density (Hours per Square Kilometer)": density_value
+                                })
+                            else:
+                                print(f"No features found for {time}, Pixel BBox: {pixel_bbox}. Response: {data}")
+                        else:
+                            print(f"Error for {time}, Pixel BBox: {pixel_bbox}: {response.status_code} - {response.text}")
+
+                # Save data after processing each day
+                if output_data:
+                    df = pd.DataFrame(output_data)
+                    df.to_csv(f"{output_file}_{month:02d}_{day:02d}.csv", index=False)
+                    print(f"Data for {year}-{month:02d}-{day:02d} saved to {output_file}_{month:02d}_{day:02d}.csv")
+                    output_data.clear()  # Clear data for the next day
+
+    except KeyboardInterrupt:
+        # Handle manual stop and save the data collected so far
+        if output_data:
+            df = pd.DataFrame(output_data)
+            df.to_csv(f"{output_file}_interrupted.csv", index=False)
+            print(f"Process interrupted. Data saved to {output_file}_interrupted.csv.")
+        else:
+            print("No data collected to save.")
+
+# User input
+bbox = input("Enter the bounding box (format: min_lat,min_lon,max_lat,max_lon): ")
+year = int(input("Enter the year (e.g., 2024): "))
+vessel_type = input("Enter the type of vessel (e.g., Cargo Ships, Fishing, Icebreakers, etc.): ")
+output_file = input("Enter the output CSV file name base (e.g., density_data): ")
+
+# Call the function
+get_density_data(bbox, year, vessel_type, output_file)
